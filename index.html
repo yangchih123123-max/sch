@@ -29,6 +29,7 @@ label{display:block;margin:6px 0}label input[type=checkbox]{width:auto;margin-ri
 .filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.filters select{width:auto;flex:1}
 .row{display:flex;gap:12px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px}
 .rc{font-size:30px;font-weight:800;min-width:64px;text-align:center}.rm{flex:1}
+.o{color:var(--warn);font-weight:700}.r{color:var(--bad);font-weight:800}
 .tr{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
 .tr:last-child{border-bottom:0}
 nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom);z-index:5}
@@ -56,12 +57,12 @@ details{margin:12px 0;border:1px solid var(--line);border-radius:10px;padding:8p
 <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <script>
 /* ====== 部署時只需要改這兩行 ====== */
-const LIFF_ID = '2012264542-7Drlq8kz';
-const API_URL = 'https://script.google.com/macros/s/AKfycbwNweyvydYaEoIc9hYpmW3ZVDCTdAYglJOleSXmy1yA7BpwiFhOoy66DRtSxsKlYM4DkA/exec';
+const LIFF_ID = 'YOUR_LIFF_ID';
+const API_URL = 'YOUR_APPS_SCRIPT_EXEC_URL';
 /* ================================== */
 
 let ME = null, ROUTES = [], TAB = 'home', BOARD = null, TODAY = null, TODAYDATE = '', ALL = false, tick = 0;
-let FILTER = { nosmoke: false, minSeats: 0 };
+let FILTER = { nosmoke: false, minSeats: 0 }, LOADED = Date.now();
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -144,7 +145,8 @@ async function doBind() {
   } catch (e) { toast(e.message, true); }
 }
 async function runAction(a) {
-  if (a === 'onduty' || a === 'standby' || a === 'offduty') return doStatus(a);
+  if (a === 'onduty' || a === 'standby') return doStatus('standby');
+  if (a === 'offduty') return doStatus('offduty');
   if (a === 'pickup') return doPickup();
   if (a === 'dropoff') return doDropoff();
   if (a === 'cancel') return doCancel();
@@ -170,15 +172,16 @@ async function refreshMe() {
 function renderHome() {
   const m = ME, s = m.status;
   const can = {
-    onduty: s === '下班',
     standby: s === '下班' || s === '上班' || s === '空車返回',
-    pickup: s === '出發載客' || s === '待命' || s === '空車返回' || s === '上班',
-    dropoff: s === '載客中',
+    pickup: s === '出發載客' || s === '待命' || s === '空車返回' || s === '下班' || s === '上班',
+    dropoff: s === '載客中' || s === '出發載客',
     cancel: s === '出發載客',
     offduty: s === '上班' || s === '待命' || s === '空車返回'
   };
   let info = m.mins + ' 分鐘';
   if (s === '待命') info = m.rank ? `排隊第 <b>${m.rank}</b> 位（共 ${m.queueSize} 台待命）・已等 ${m.mins} 分` : info;
+  if (s === '出發載客') info = m.acked ? '已接單，請前往上車地點' : '總機已派車，請按「收到」';
+  const ackCard = (s === '出發載客' && !m.acked) ? `<button class="btn ok" style="font-size:30px;padding:30px 10px;margin-bottom:12px" onclick="doAck()">收到，前往</button>` : '';
   let tripCard = '';
   if (m.trip && (s === '出發載客' || s === '載客中')) {
     const p = m.trip.pickupText;
@@ -187,13 +190,13 @@ function renderHome() {
       ${p ? '<button class="btn" onclick="openNav(ME.trip.pickupText)">Google Maps 導航</button>' : ''}</div>`;
   }
   $('#view').innerHTML = `
+    ${ackCard}
     <div class="card center"><div class="code">${esc(m.code)}</div><div class="mut">${esc(m.name || '')}</div>
       <div style="margin-top:8px"><span class="chip" data-s="${esc(s)}">${esc(s)}</span></div>
       <div style="margin-top:8px">${info}</div></div>
     ${tripCard}
     <div class="grid">
-      <button class="btn gray" ${can.onduty ? '' : 'disabled'} onclick="doStatus('onduty')">上班</button>
-      <button class="btn ok" ${can.standby ? '' : 'disabled'} onclick="doStatus('standby')">到等候室<br>待命</button>
+      <button class="btn ok span2" ${can.standby ? '' : 'disabled'} onclick="doStatus('standby')">到等候室　待命</button>
       <button class="btn" ${can.pickup ? '' : 'disabled'} onclick="doPickup()">客人上車<br>載客中</button>
       <button class="btn vio" ${can.dropoff ? '' : 'disabled'} onclick="doDropoff()">客人下車<br>空車返回</button>
       ${can.cancel ? '<button class="btn warn span2" onclick="doCancel()">取消派車（客人沒上車）</button>' : ''}
@@ -206,6 +209,12 @@ async function doStatus(a) {
   try {
     const r = await call(a); ME = r.me; setTab('home', true);
     if (a === 'offduty') summaryModal(r.summary); else toast('已更新：' + ME.status);
+  } catch (e) { toast(e.message, true); }
+}
+async function doAck() {
+  try {
+    const r = await call('ack'); ME = r.me; renderHome();
+    if (ME.trip && ME.trip.pickupText) openNav(ME.trip.pickupText);
   } catch (e) { toast(e.message, true); }
 }
 async function doCancel() {
@@ -279,7 +288,7 @@ function buildBoard() {
         <select id="fSeats"><option value="0">座位不限</option><option value="5">5 人以上</option><option value="6">6 人以上</option><option value="7">7 人以上</option></select></div>
       <input id="pickup" placeholder="上車地點／貼上地圖連結（選填）">
       <button class="btn ok" onclick="doDispatch()">派車給下一位</button></div>` : '';
-  $('#view').innerHTML = dp + '<div class="mut sm" id="counts" style="margin:0 4px 8px"></div><div id="rows"></div>';
+  $('#view').innerHTML = (ME.isDispatcher ? '<div id="alerts"></div>' : '') + dp + '<div class="mut sm" id="counts" style="margin:0 4px 8px"></div><div id="rows"></div>';
   if (ME.isDispatcher) {
     $('#fSeats').value = String(FILTER.minSeats);
     $('#fNo').onchange = e => { FILTER.nosmoke = e.target.checked; loadBoard(true); };
@@ -291,7 +300,7 @@ function buildBoard() {
   if (BOARD) updateBoard();
 }
 async function loadBoard(quiet) {
-  try { BOARD = await call('board', { filter: FILTER }, quiet); ME = BOARD.me; if (TAB === 'board') updateBoard(); }
+  try { BOARD = await call('board', { filter: FILTER }, quiet); LOADED = Date.now(); ME = BOARD.me; if (TAB === 'board') updateBoard(); }
   catch (e) { if (!quiet) toast(e.message, true); }
 }
 function updateBoard() {
@@ -300,13 +309,51 @@ function updateBoard() {
     $('#nextBox').textContent = b.next ? b.next.code : '—';
     $('#nextInfo').textContent = b.next ? [b.next.name, b.next.model, b.next.seats ? b.next.seats + '人座' : '', b.next.nosmoke ? '無菸' : ''].filter(Boolean).join('・') : '目前沒有符合條件的待命司機';
   }
+  renderAlerts();
   const c = b.counts || {};
-  $('#counts').textContent = ['待命', '出發載客', '載客中', '空車返回', '上班', '下班'].map(k => k + ' ' + (c[k] || 0)).join('　');
+  $('#counts').textContent = ['待命', '出發載客', '載客中', '空車返回'].map(k => k + ' ' + (c[k] || 0)).join('　');
   $('#rows').innerHTML = b.drivers.filter(d => d.status !== '下班').map(d =>
     `<div class="row" data-code="${esc(d.code)}"><div class="rc">${esc(d.code)}</div><div class="rm">
-      <span class="chip" data-s="${esc(d.status)}">${esc(d.status)}${d.rank ? ' #' + d.rank : ''}</span> <span class="mut">${d.mins} 分</span>
+      <span class="chip" data-s="${esc(d.status)}">${esc(d.status)}${d.rank ? ' #' + d.rank : ''}${d.status === '出發載客' ? (d.acked ? ' ✔' : ' ⏳') : ''}</span> <span class="${minCls(d)}">${d.mins} 分</span>
       <div class="mut sm">${esc(d.model || '')}${d.seats ? '・' + esc(d.seats) + '人' : ''}${d.nosmoke ? '・無菸' : ''}${d.attrs ? '・' + esc(d.attrs) : ''}</div></div></div>`).join('')
     || '<div class="card center mut">目前沒有司機在線</div>';
+}
+function showDispatched(d) {
+  modal(`<h2>請用 Zello 通知</h2><div class="nextcode">${esc(d.code)}</div>
+      <div class="mut center">${esc([d.name, d.model, d.seats ? d.seats + '人座' : '', d.nosmoke ? '無菸' : ''].filter(Boolean).join('・'))}</div>
+      ${d.pickup ? `<p style="font-size:20px;font-weight:700">${esc(d.pickup)}</p>` : ''}
+      <button class="btn" onclick="closeModal()">好</button>`);
+}
+function minCls(d) {
+  const s = (BOARD && BOARD.settings) || {};
+  if (d.status !== '出發載客') return 'mut';
+  if (d.mins >= (s.alertMin || 20)) return 'r';
+  if (d.mins >= (s.warnMin || 10)) return 'o';
+  return 'mut';
+}
+function renderAlerts() {
+  const box = $('#alerts'); if (!box || !BOARD || !ME.isDispatcher) return;
+  const el = Math.round((Date.now() - LOADED) / 1000), st = BOARD.settings || {}, lim = st.ackSec || 60;
+  box.innerHTML = BOARD.drivers.filter(d => d.status === '出發載客').map(d => {
+    const code = esc(d.code), mins = d.mins + Math.floor(el / 60);
+    if (!d.acked) {
+      const s = d.secs + el;
+      if (s < lim) return `<div class="card center" style="border:2px solid var(--warn)"><div class="mut">等待確認</div><div class="nextcode" style="font-size:60px">${code}</div><div class="warn" style="font-size:22px">${s} 秒</div></div>`;
+      return `<div class="card center" style="border:2px solid var(--bad)"><div class="r" style="font-size:24px">${code} 沒有回應（${s} 秒）</div><button class="btn bad" style="font-size:24px;padding:22px 10px;margin-top:8px" onclick="doReassign('${code}')">改派下一位</button></div>`;
+    }
+    if (mins >= (st.warnMin || 10)) {
+      const cls = mins >= (st.alertMin || 20) ? 'r' : 'o';
+      return `<div class="card center" style="border:2px solid var(--${cls === 'r' ? 'bad' : 'warn'})"><div class="${cls}" style="font-size:22px">${code} 已 ${mins} 分沒按「載客中」</div><button class="btn" style="margin-top:8px" onclick="override('${code}','載客中')">代按：客人已上車</button></div>`;
+    }
+    return '';
+  }).join('');
+}
+async function doReassign(code) {
+  try {
+    const r = await call('reassign', { code: code, filter: FILTER });
+    if (r.noNext) { toast('沒有其他待命司機，' + code + ' 已回到隊伍', true); closeModal(); return; }
+    showDispatched(r.dispatched);
+  } catch (e) { toast(e.message, true); }
 }
 async function doDispatch(code) {
   try {
@@ -314,16 +361,14 @@ async function doDispatch(code) {
     const r = await call('dispatch', { code: code || '', pickup: ($('#pickup') || {}).value || '', filter: FILTER });
     const d = r.dispatched;
     if ($('#pickup')) $('#pickup').value = '';
-    modal(`<h2>請用 Zello 通知</h2><div class="nextcode">${esc(d.code)}</div>
-      <div class="mut center">${esc([d.name, d.model, d.seats ? d.seats + '人座' : '', d.nosmoke ? '無菸' : ''].filter(Boolean).join('・'))}</div>
-      ${d.pickup ? `<p style="font-size:20px;font-weight:700">${esc(d.pickup)}</p>` : ''}
-      <button class="btn" onclick="closeModal()">好</button>`);
+    showDispatched(d);
   } catch (e) { toast(e.message, true); }
 }
 function rowMenu(code) {
   const d = BOARD.drivers.find(x => x.code === code); if (!d) return;
   modal(`<h2>代號 ${esc(code)}　<span class="chip" data-s="${esc(d.status)}">${esc(d.status)}</span></h2>
     ${d.status === '待命' ? `<button class="btn ok" onclick="closeModalQuiet();doDispatch('${esc(code)}')">指定派這位</button>` : ''}
+    ${d.status === '出發載客' ? `<button class="btn" onclick="override('${esc(code)}','載客中')">代按：客人已上車</button><button class="btn warn" onclick="closeModalQuiet();doReassign('${esc(code)}')">改派下一位</button>` : ''}
     <button class="btn ghost" onclick="override('${esc(code)}','待命')">改為「待命」（重新排到最後）</button>
     <button class="btn ghost" onclick="override('${esc(code)}','空車返回')">改為「空車返回」</button>
     <button class="btn ghost" onclick="override('${esc(code)}','下班')">改為「下班」</button>
@@ -366,8 +411,9 @@ function editTrip(i) { fareModal(TODAY.summary.trips[i], '修改行程'); }
 setInterval(() => {
   if (document.hidden || !ME) return; tick++;
   if (TAB === 'board') { if (ME.isDispatcher || tick % 2 === 0) loadBoard(true); }
-  else if (TAB === 'home' && tick % 3 === 0 && $('#modal').style.display !== 'flex') refreshMe();
+  else if (TAB === 'home' && tick % ((ME.status === '待命' || ME.status === '出發載客') ? 2 : 6) === 0 && $('#modal').style.display !== 'flex') refreshMe();
 }, 10000);
+setInterval(() => { if (TAB === 'board' && ME && ME.isDispatcher && !document.hidden) renderAlerts(); }, 1000);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden || !ME || $('#modal').style.display === 'flex') return;
   if (TAB === 'board') loadBoard(true); else if (TAB === 'home') refreshMe();
