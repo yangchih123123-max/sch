@@ -14,7 +14,7 @@ body{margin:0;background:var(--bg);color:var(--tx);font:17px/1.45 -apple-system,
 .center{text-align:center}.mut{color:var(--mut)}.sm{font-size:14px}.warn{color:var(--warn);font-weight:600}
 .code{font-size:64px;font-weight:800;line-height:1.05;letter-spacing:1px}
 .nextcode{font-size:76px;font-weight:800;line-height:1.05;text-align:center;margin:4px 0}
-.fare{font-size:68px;font-weight:800;text-align:center;line-height:1.1;margin:6px 0}
+.big{font-size:68px;font-weight:800;text-align:center;line-height:1.1;margin:6px 0}
 .chip{display:inline-block;color:#fff;border-radius:999px;padding:3px 12px;font-size:15px;font-weight:600;background:var(--gray)}
 .chip[data-s="待命"]{background:var(--ok)}.chip[data-s="出發載客"]{background:var(--warn)}
 .chip[data-s="載客中"]{background:var(--pri)}.chip[data-s="空車返回"]{background:var(--vio)}
@@ -22,6 +22,8 @@ body{margin:0;background:var(--bg);color:var(--tx);font:17px/1.45 -apple-system,
 .btn.ok{background:var(--ok)}.btn.warn{background:var(--warn)}.btn.vio{background:var(--vio)}.btn.bad{background:var(--bad)}.btn.gray{background:var(--gray)}
 .btn.ghost{background:transparent;color:var(--pri);border:1.5px solid var(--pri)}
 .btn:disabled{opacity:.3}.btn+.btn{margin-top:10px}
+.bigbtn{font-size:30px;padding:30px 10px}
+.mrow{display:flex;justify-content:space-around;margin-top:6px}.mrow b{display:block;font-size:30px;line-height:1.2}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.grid .btn+.btn{margin-top:0}
 .span2{grid-column:1/3}
 input,select{width:100%;padding:13px;border:1px solid var(--line);border-radius:10px;font-size:18px;background:var(--bg);color:var(--tx);font-family:inherit;margin:6px 0}
@@ -38,7 +40,6 @@ nav button.on{color:var(--pri);box-shadow:inset 0 3px 0 var(--pri)}
 #modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:20;align-items:flex-end;justify-content:center}
 .sheet{background:var(--card);width:100%;max-width:560px;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom))}
 .sheet h2{margin:0 0 6px;font-size:22px}
-details{margin:12px 0;border:1px solid var(--line);border-radius:10px;padding:8px 12px}summary{font-weight:700;padding:6px 0}
 #busy{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:30;align-items:center;justify-content:center}
 .spin{width:54px;height:54px;border-radius:50%;border:6px solid #fff;border-top-color:transparent;animation:r 0.8s linear infinite}@keyframes r{to{transform:rotate(360deg)}}
 #toast{position:fixed;left:12px;right:12px;bottom:calc(88px + env(safe-area-inset-bottom));background:#222;color:#fff;border-radius:12px;padding:13px 16px;z-index:40;display:none;text-align:center;font-weight:600}
@@ -61,10 +62,15 @@ const LIFF_ID = '2012264542-7Drlq8kz';
 const API_URL = 'https://script.google.com/macros/s/AKfycbwNweyvydYaEoIc9hYpmW3ZVDCTdAYglJOleSXmy1yA7BpwiFhOoy66DRtSxsKlYM4DkA/exec';
 /* ================================== */
 
-let ME = null, ROUTES = [], TAB = 'home', BOARD = null, TODAY = null, TODAYDATE = '', ALL = false, tick = 0;
+let ME = null, TAB = 'home', BOARD = null, LOGD = null, TODAYDATE = '', tick = 0;
+let SET = { startKm: 3, startFare: 100, midKm: 8, midFare: 200, extra: [30, 20], unit: 5, factor: 1.25 };
 let FILTER = { nosmoke: false, minSeats: 0 }, LOADED = Date.now();
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function fmtDur(m) {
+  if (m === '' || m == null || !isFinite(Number(m))) return '--';
+  m = Math.round(Number(m)); return Math.floor(m / 60) + ' 時 ' + (m % 60) + ' 分';
+}
 
 /* ---------- 共用 ---------- */
 function busy(on) { $('#busy').style.display = on ? 'flex' : 'none'; }
@@ -78,6 +84,7 @@ function closeModal() {
   $('#modal').style.display = 'none';
   if (TAB === 'today') loadToday(true); else if (TAB === 'home') refreshMe(); else loadBoard(true);
 }
+function closeModalQuiet() { $('#modal').style.display = 'none'; }
 async function call(action, data, quiet) {
   if (!quiet) busy(true);
   try {
@@ -114,6 +121,64 @@ function getAction() {
   return a;
 }
 
+/* ---------- 計價與行程里程 ---------- */
+function hav(a, b, c, d) {
+  const R = 6371, rad = Math.PI / 180, dLat = (c - a) * rad, dLng = (d - b) * rad;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(a * rad) * Math.cos(c * rad) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+function billKm(km) { return Math.max(1, Math.ceil(km - 1e-9)); }          // 不足 1 公里算 1 公里，超過就 +1
+function fareOf(km) {
+  const T = SET, n = billKm(km);
+  let f;
+  if (n <= T.startKm) f = T.startFare;
+  else if (n <= T.midKm) f = T.startFare + (n - T.startKm) * (T.midFare - T.startFare) / (T.midKm - T.startKm);
+  else { f = T.midFare; for (let j = 1; j <= n - T.midKm; j++) f += T.extra[(j - 1) % T.extra.length]; }
+  const u = T.unit > 0 ? T.unit : 5;
+  return (Math.ceil(f / u - 1e-9) * u) || 0;
+}
+function ruleText() { return SET.startKm + ' 公里內 $' + SET.startFare + '・' + SET.midKm + ' 公里 $' + SET.midFare + '・之後每公里 ' + SET.extra.join('/') + ' 元輪流'; }
+const M = { id: '', acc: 0, last: null, p: null, watch: null };
+function meterSave() { try { localStorage.setItem('meter_' + M.id, JSON.stringify({ acc: M.acc, last: M.last })); } catch (e) {} }
+function meterKm() {
+  const straight = (M.p && M.last) ? hav(M.p.lat, M.p.lng, M.last.lat, M.last.lng) * SET.factor : 0;
+  return Math.max(M.acc, straight);
+}
+function startMeter(t) {
+  if (M.id !== t.id) {
+    stopMeter(); M.id = t.id; M.acc = 0; M.last = null;
+    try { const j = JSON.parse(localStorage.getItem('meter_' + t.id) || 'null'); if (j) { M.acc = j.acc || 0; M.last = j.last || null; } } catch (e) {}
+  }
+  M.p = (t.pLat !== '' && t.pLat != null && isFinite(Number(t.pLat))) ? { lat: Number(t.pLat), lng: Number(t.pLng) } : null;
+  if (!M.watch && navigator.geolocation) {
+    M.watch = navigator.geolocation.watchPosition(onMeterPos, () => {}, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+  }
+}
+function stopMeter(clear) {
+  if (M.watch != null && navigator.geolocation) navigator.geolocation.clearWatch(M.watch);
+  if (clear && M.id) { try { localStorage.removeItem('meter_' + M.id); } catch (e) {} }
+  M.watch = null; M.id = ''; M.acc = 0; M.last = null; M.p = null;
+}
+function onMeterPos(p) {
+  const c = { lat: p.coords.latitude, lng: p.coords.longitude, t: Date.now() };
+  if (p.coords.accuracy > 80) return;
+  if (!M.last) M.last = M.p ? { lat: M.p.lat, lng: M.p.lng } : null;
+  if (M.last) {
+    const d = hav(M.last.lat, M.last.lng, c.lat, c.lng);
+    const dt = M.last.t ? (c.t - M.last.t) / 3600000 : 0;
+    if (d >= 0.02 && !(dt > 0 && d / dt > 200)) { M.acc += d; M.last = c; }
+  } else M.last = c;
+  meterSave(); drawMeter();
+}
+function drawMeter() {
+  const t = ME && ME.trip; if (!t || ME.status !== '載客中' || !$('#mFare')) return;
+  const km = Math.round(meterKm() * 10) / 10, sec = Math.max(0, Math.floor((Date.now() - (t.pickupMs || Date.now())) / 1000));
+  $('#mKm').textContent = km.toFixed(1);
+  $('#mBill').textContent = billKm(km);
+  $('#mFare').textContent = '$' + fareOf(km);
+  $('#mTime').textContent = String(Math.floor(sec / 60)).padStart(2, '0') + ':' + String(sec % 60).padStart(2, '0');
+}
+
 /* ---------- 啟動 ---------- */
 async function boot() {
   try {
@@ -121,7 +186,7 @@ async function boot() {
     if (!liff.isLoggedIn()) { liff.login(); return; }
     const r = await call('me');
     if (r.bound === false) { showBind(); return; }
-    ME = r.me; ROUTES = r.routes || [];
+    ME = r.me; SET = r.settings || SET;
     const a = getAction();
     try { history.replaceState(null, '', location.pathname); } catch (e) {}
     $('#nav').style.display = 'flex';
@@ -151,7 +216,7 @@ async function runAction(a) {
   if (a === 'dropoff') return doDropoff();
   if (a === 'cancel') return doCancel();
   if (a === 'board' || a === 'dispatch') return setTab('board');
-  if (a === 'today') return setTab('today');
+  if (a === 'today' || a === 'log') return setTab('today');
 }
 
 /* ---------- 分頁 ---------- */
@@ -165,16 +230,33 @@ function setTab(t, noLoad) {
   else { buildToday(); loadToday(); }
 }
 async function refreshMe() {
-  try { const r = await call('me', {}, true); ME = r.me; ROUTES = r.routes || ROUTES; if (TAB === 'home') renderHome(); } catch (e) {}
+  try { const r = await call('me', {}, true); ME = r.me; SET = r.settings || SET; if (TAB === 'home') renderHome(); } catch (e) {}
 }
 
 /* ---------- 首頁（司機狀態） ---------- */
+function renderRide() {
+  const m = ME, t = m.trip || {};
+  if (m.trip) startMeter(m.trip);
+  const noGps = !(t.pLat !== '' && t.pLat != null && isFinite(Number(t.pLat)));
+  $('#view').innerHTML = `
+    <div class="card center" style="border:2px solid var(--pri)">
+      <div><span class="chip" data-s="載客中">載客中</span>　${esc(m.code)} 號　${esc(t.pickupTime || m.since)} 上車・已 <b id="mTime">00:00</b></div>
+      <div class="big" style="font-size:84px" id="mFare">$—</div>
+      <div class="mrow"><div class="mut">里程<b><span id="mKm">0.0</span> km</b></div><div class="mut">計費<b><span id="mBill">1</span> 公里</b></div></div>
+      <div class="mut sm" style="margin-top:8px">行程估計，下車時以路線距離為準</div>
+      <div class="mut sm">${esc(ruleText())}</div>
+      ${noGps ? '<div class="warn sm" style="margin-top:6px">沒有上車定位，估計里程可能不準；下車時可補公里數</div>' : ''}</div>
+    <button class="btn vio bigbtn" onclick="doDropoff()">客人下車</button>`;
+  drawMeter();
+}
 function renderHome() {
   const m = ME, s = m.status;
+  if (s === '載客中') return renderRide();
+  stopMeter();
   const can = {
     standby: s === '下班' || s === '上班' || s === '空車返回',
-    pickup: s === '出發載客' || s === '待命' || s === '空車返回' || s === '下班' || s === '上班',
-    dropoff: s === '載客中' || s === '出發載客',
+    pickup: true,
+    dropoff: s === '出發載客',
     cancel: s === '出發載客',
     offduty: s === '上班' || s === '待命' || s === '空車返回'
   };
@@ -183,11 +265,11 @@ function renderHome() {
   if (s === '出發載客') info = m.acked ? '已接單，請前往上車地點' : '總機已派車，請按「收到」';
   const ackCard = (s === '出發載客' && !m.acked) ? `<button class="btn ok" style="font-size:30px;padding:30px 10px;margin-bottom:12px" onclick="doAck()">收到，前往</button>` : '';
   let tripCard = '';
-  if (m.trip && (s === '出發載客' || s === '載客中')) {
-    const p = m.trip.pickupText;
+  if (s === '出發載客') {
+    const p = m.pickupText;
     tripCard = `<div class="card"><div class="mut sm">客人上車地點</div>
       <div style="font-size:21px;font-weight:700;margin:4px 0 10px">${p ? esc(p) : '（總機以 Zello 語音通知）'}</div>
-      ${p ? '<button class="btn" onclick="openNav(ME.trip.pickupText)">Google Maps 導航</button>' : ''}</div>`;
+      ${p ? '<button class="btn" onclick="openNav(ME.pickupText)">Google Maps 導航</button>' : ''}</div>`;
   }
   $('#view').innerHTML = `
     ${ackCard}
@@ -208,13 +290,20 @@ async function doStatus(a) {
   if (a === 'offduty' && !confirm('確定要下班嗎？')) return;
   try {
     const r = await call(a); ME = r.me; setTab('home', true);
-    if (a === 'offduty') summaryModal(r.summary); else toast('已更新：' + ME.status);
+    if (a === 'offduty') {
+      const s = r.summary || { date: '', income: 0, count: 0, km: 0, pending: 0 };
+      modal(`<h2>已下班</h2><div class="mut">本次在線 ${fmtDur(r.shiftMins)}</div>
+        <div class="mut" style="margin-top:8px">今日收入（${esc(s.date)}）</div><div class="big">$${esc(s.income)}</div>
+        <div class="mut center">${esc(s.count)} 趟・${esc(s.km)} 公里</div>
+        ${s.pending ? `<p class="warn center">有 ${s.pending} 趟還沒算出車資，請到「今日」補資料</p>` : ''}
+        <button class="btn" style="margin-top:12px" onclick="closeModal()">關閉</button>`);
+    } else toast('已更新：' + ME.status);
   } catch (e) { toast(e.message, true); }
 }
 async function doAck() {
   try {
     const r = await call('ack'); ME = r.me; renderHome();
-    if (ME.trip && ME.trip.pickupText) openNav(ME.trip.pickupText);
+    if (ME.pickupText) openNav(ME.pickupText);
   } catch (e) { toast(e.message, true); }
 }
 async function doCancel() {
@@ -226,58 +315,42 @@ async function doPickup() {
     busy(true); const pos = await getPos(); busy(false);
     const r = await call('pickup', pos || {});
     ME = r.me; setTab('home', true);
-    const t = r.trip || {};
-    modal(`<h2>✔ 已記錄上車</h2><div class="mut">${esc(t.pickupTime || '')}・${pos ? 'GPS 已定位' : '<span class="warn">沒抓到 GPS</span>（可用下方里程表）'}</div>
-      <label class="mut" style="margin-top:12px">里程表起點（選填）</label>
-      <input id="odo1" type="number" inputmode="decimal" placeholder="例如 123456">
-      <button class="btn ghost" onclick="saveOdo1('${esc(t.id)}')">儲存起點里程</button>
-      <button class="btn" onclick="closeModal()">完成</button>`);
+    if (pos) toast('已記錄上車'); else toast('已記錄上車，但沒抓到定位', true);
   } catch (e) { toast(e.message, true); }
-}
-async function saveOdo1(id) {
-  const v = $('#odo1').value; if (!v) return closeModal();
-  try { await call('updateTrip', { tripId: id, odoStart: v }); toast('已儲存起點里程'); closeModal(); } catch (e) { toast(e.message, true); }
 }
 async function doDropoff() {
   try {
     busy(true); const pos = await getPos(); busy(false);
-    const r = await call('dropoff', pos || {});
+    const km = (ME.status === '載客中' && M.id) ? meterKm() : 0;
+    const r = await call('dropoff', Object.assign({}, pos || {}, km > 0 ? { kmHint: Math.round(km * 10) / 10 } : {}));
+    stopMeter(true);
     ME = r.me; setTab('home', true);
     fareModal(r.trip, '車資');
   } catch (e) { toast(e.message, true); }
 }
 
-/* ---------- 車資彈窗 ---------- */
+/* ---------- 車資視窗 ---------- */
 function fareModal(t, title) {
-  const has = t.fare !== '' && t.fare != null;
-  const opts = '<option value="">（不使用）</option>' + ROUTES.map(r => `<option value="${esc(r.name)}" ${t.route === r.name ? 'selected' : ''}>${esc(r.name)}（$${esc(r.fare)}）</option>`).join('');
+  const has = t.fare !== '' && t.fare != null, hasKm = t.km !== '' && t.km != null;
   modal(`<div class="mut center">${esc(title || '車資')}　${esc(t.pickupTime || '--')} → ${esc(t.dropTime || '--')}</div>
-    <div class="fare">${has ? '$' + esc(t.fare) : '待補'}</div>
-    <div class="mut center">${t.km !== '' && t.km != null ? esc(t.km) + ' 公里・' : ''}${esc(t.method || '')}</div>
-    ${has ? '' : '<p class="warn center">沒有足夠資料算車資，請展開下方補里程表或輸入金額</p>'}
-    <details ${has ? '' : 'open'}><summary>修正／補資料</summary>
-      <label class="mut">常用路線（有固定車資）</label><select id="fxRoute">${opts}</select>
-      <label class="mut">里程表 起點／終點（改用里程表計算）</label>
-      <div class="grid"><input id="fxO1" type="number" inputmode="decimal" placeholder="起點" value="${esc(t.odoStart)}"><input id="fxO2" type="number" inputmode="decimal" placeholder="終點" value="${esc(t.odoEnd)}"></div>
+    <div class="big">${has ? '$' + esc(t.fare) : '待補'}</div>
+    <div class="mut center" style="font-size:20px">${hasKm ? '<b>' + esc(t.km) + ' 公里</b>（計費 ' + billKm(Number(t.km)) + ' 公里）・' : ''}${esc(t.method || '')}</div>
+    ${has ? '' : '<p class="warn center">沒有足夠資料算車資，請展開下方補公里數或輸入金額</p>'}
+    <details ${has ? '' : 'open'} style="margin:12px 0;border:1px solid var(--line);border-radius:10px;padding:8px 12px"><summary style="font-weight:700;padding:6px 0">修正／補資料</summary>
+      <label class="mut">公里數（直接指定，車資自動重算）</label>
+      <input id="fxKm" type="number" inputmode="decimal" placeholder="例如 8.5" value="${hasKm ? esc(t.km) : ''}">
       <label class="mut">實收金額（直接指定）</label>
       <input id="fxFare" type="number" inputmode="numeric" placeholder="例如 180">
-      <button class="btn ghost" onclick="applyFix('${esc(t.id)}')">更新車資</button>
+      <button class="btn ghost" onclick="applyFix('${esc(t.id)}', '${hasKm ? esc(t.km) : ''}')">更新車資</button>
     </details>
     <button class="btn" onclick="closeModal()">完成</button>`);
 }
-async function applyFix(id) {
-  const d = { tripId: id, route: $('#fxRoute').value };
-  const o1 = $('#fxO1').value, o2 = $('#fxO2').value, f = $('#fxFare').value;
-  if (o1) d.odoStart = o1; if (o2) d.odoEnd = o2;
-  if (o1 && o2) d.method = 'odo';
+async function applyFix(id, oldKm) {
+  const d = { tripId: id };
+  const k = $('#fxKm').value, f = $('#fxFare').value;
+  if (k && k !== oldKm) d.km = k;          // 只有真的改過公里數才覆蓋
   if (f) d.fare = f;
   try { const r = await call('updateTrip', d); ME = r.me; fareModal(r.trip, '已更新'); } catch (e) { toast(e.message, true); }
-}
-function summaryModal(s) {
-  modal(`<h2>今日結算</h2><div class="mut">${esc(s.date)}</div><div class="fare">$${esc(s.income)}</div>
-    <div class="mut center">${esc(s.count)} 趟・${esc(s.km)} 公里</div>
-    ${s.pending ? `<p class="warn center">有 ${s.pending} 趟還沒算出車資，請到「今日」補資料</p>` : ''}
-    <button class="btn" style="margin-top:12px" onclick="closeModal()">關閉</button>`);
 }
 
 /* ---------- 看板 ---------- */
@@ -359,9 +432,8 @@ async function doDispatch(code) {
   try {
     if (code && !confirm('指定派給代號 ' + code + '（跳過排隊順序）？')) return;
     const r = await call('dispatch', { code: code || '', pickup: ($('#pickup') || {}).value || '', filter: FILTER });
-    const d = r.dispatched;
     if ($('#pickup')) $('#pickup').value = '';
-    showDispatched(d);
+    showDispatched(r.dispatched);
   } catch (e) { toast(e.message, true); }
 }
 function rowMenu(code) {
@@ -374,38 +446,38 @@ function rowMenu(code) {
     <button class="btn ghost" onclick="override('${esc(code)}','下班')">改為「下班」</button>
     <button class="btn gray" onclick="closeModal()">關閉</button>`);
 }
-function closeModalQuiet() { $('#modal').style.display = 'none'; }
 async function override(code, status) {
   try { await call('override', { code, status }); toast('代號 ' + code + ' 已改為 ' + status); closeModal(); } catch (e) { toast(e.message, true); }
 }
 
-/* ---------- 今日 ---------- */
+/* ---------- 今日（自己的收入、公里、趟次、上下班記錄） ---------- */
 function buildToday() {
-  $('#view').innerHTML = `<div class="card"><input type="date" id="tDate" value="${esc(TODAYDATE)}">
-    ${ME.isDispatcher ? `<label><input type="checkbox" id="tAll" ${ALL ? 'checked' : ''}>全體司機彙總</label>` : ''}</div><div id="todayBody"></div>`;
+  $('#view').innerHTML = `<div class="card"><input type="date" id="tDate" value="${esc(TODAYDATE)}"></div><div id="todayBody"></div>`;
   $('#tDate').onchange = e => { TODAYDATE = e.target.value; loadToday(); };
-  if ($('#tAll')) $('#tAll').onchange = e => { ALL = e.target.checked; loadToday(); };
+  if (LOGD) drawToday();
 }
 async function loadToday(quiet) {
   try {
-    TODAY = await call('today', { date: TODAYDATE, all: ALL }, quiet); ME = TODAY.me;
-    TODAYDATE = TODAY.date || (TODAY.summary && TODAY.summary.date) || TODAYDATE;
-    if (TAB !== 'today' || !$('#todayBody')) return;
-    $('#tDate').value = TODAYDATE;
-    if (TODAY.all) {
-      const t = TODAY.total;
-      $('#todayBody').innerHTML = `<div class="card center"><div class="mut">全體</div><div class="fare">$${t.income}</div><div class="mut">${t.count} 趟・${t.km} 公里</div></div>
-        <div class="card">${TODAY.all.map(r => `<div class="tr"><div><b style="font-size:22px">${esc(r.code)}</b> <span class="mut">${esc(r.name)}</span></div><div style="text-align:right"><b>$${r.income}</b><div class="mut sm">${r.count} 趟・${r.km} km${r.pending ? '・<span class="warn">待補 ' + r.pending + '</span>' : ''}</div></div></div>`).join('') || '<div class="center mut">這天沒有行程</div>'}</div>`;
-      return;
-    }
-    const s = TODAY.summary;
-    $('#todayBody').innerHTML = `<div class="card center"><div class="mut">${esc(ME.code)} 號　收入</div><div class="fare">$${s.income}</div>
-      <div class="mut">${s.count} 趟・${s.km} 公里</div>${s.pending ? `<div class="warn" style="margin-top:6px">有 ${s.pending} 趟待補資料</div>` : ''}</div>
-      <div class="card">${s.trips.map((t, i) => `<div class="tr"><div><b>${esc(t.dropTime)}</b> <span class="mut sm">${esc(t.route || (t.km !== '' ? t.km + ' km' : ''))}</span></div>
-        <div>${t.fare !== '' && t.fare != null ? '<b>$' + esc(t.fare) + '</b>' : '<span class="warn">待補</span>'} <button class="chip" style="border:0" onclick="editTrip(${i})">編輯</button></div></div>`).join('') || '<div class="center mut">這天沒有行程</div>'}</div>`;
+    LOGD = await call('today', { date: TODAYDATE }, quiet); ME = LOGD.me;
+    TODAYDATE = LOGD.date || TODAYDATE;
+    if (TAB === 'today') { if ($('#tDate')) $('#tDate').value = TODAYDATE; drawToday(); }
   } catch (e) { if (!quiet) toast(e.message, true); }
 }
-function editTrip(i) { fareModal(TODAY.summary.trips[i], '修改行程'); }
+function drawToday() {
+  const box = $('#todayBody'); if (!box || !LOGD) return;
+  const s = LOGD.summary, L = LOGD.log;
+  const trips = s.trips.map((t, i) => `<div class="tr"><div><b>${esc(t.dropTime)}</b> <span class="mut sm">${t.km !== '' && t.km != null ? esc(t.km) + ' km' : '— km'}・${esc(t.method || '')}</span></div>
+      <div>${t.fare !== '' && t.fare != null ? '<b>$' + esc(t.fare) + '</b>' : '<span class="warn">待補</span>'} <button class="chip" style="border:0" onclick="editTrip(${i})">編輯</button></div></div>`).join('');
+  const cur = L.onDuty
+    ? `<div class="mut sm" style="margin-bottom:6px">上班中${L.since ? '，自 ' + esc(L.since) + ' 起' : ''}，已 <b>${fmtDur(L.minsNow)}</b></div>`
+    : `<div class="mut sm" style="margin-bottom:6px">目前已下班</div>`;
+  box.innerHTML = `<div class="card center"><div class="mut">${esc(ME.code)} 號　收入</div><div class="big">$${esc(s.income)}</div>
+      <div class="mut">${esc(s.count)} 趟・${esc(s.km)} 公里</div>${s.pending ? `<div class="warn" style="margin-top:6px">有 ${s.pending} 趟待補資料</div>` : ''}</div>
+    <div class="card">${trips || '<div class="center mut">這天沒有行程</div>'}</div>
+    <div class="card"><div class="mut sm" style="margin-bottom:4px">上下班記錄</div>${cur}
+      ${L.rows.map(r => `<div class="tr"><div><b>${esc(r.date)}</b></div><div>${esc(r.start || '--')} → ${esc(r.end || '--')}　<b>${fmtDur(r.mins)}</b></div></div>`).join('') || '<div class="center mut" style="padding:8px 0">還沒有上下班記錄</div>'}</div>`;
+}
+function editTrip(i) { fareModal(LOGD.summary.trips[i], '修改行程'); }
 
 /* ---------- 定時更新（只在畫面開著時） ---------- */
 setInterval(() => {
@@ -413,7 +485,11 @@ setInterval(() => {
   if (TAB === 'board') { if (ME.isDispatcher || tick % 2 === 0) loadBoard(true); }
   else if (TAB === 'home' && tick % ((ME.status === '待命' || ME.status === '出發載客') ? 2 : 6) === 0 && $('#modal').style.display !== 'flex') refreshMe();
 }, 10000);
-setInterval(() => { if (TAB === 'board' && ME && ME.isDispatcher && !document.hidden) renderAlerts(); }, 1000);
+setInterval(() => {
+  if (document.hidden) return;
+  if (TAB === 'board' && ME && ME.isDispatcher) renderAlerts();
+  if (TAB === 'home' && ME && ME.status === '載客中') drawMeter();
+}, 1000);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden || !ME || $('#modal').style.display === 'flex') return;
   if (TAB === 'board') loadBoard(true); else if (TAB === 'home') refreshMe();
